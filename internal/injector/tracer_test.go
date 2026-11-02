@@ -1,7 +1,6 @@
 package injector
 
 import (
-	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,6 +18,8 @@ type mockSysCalls struct {
 	detachCalled  bool
 	pokeDataErr   error
 	pokeDataCalls []pokeCall
+	pokeTextErr   error
+	pokeTextCalls []pokeCall
 }
 
 func (m *mockSysCalls) PtraceAttach(pid int) error {
@@ -36,10 +37,23 @@ func (m *mockSysCalls) PtracePokeData(pid int, addr uintptr, data uintptr) error
 	return m.pokeDataErr
 }
 
-func wordToBytes(w uintptr) []byte {
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, uint64(w))
-	return b
+func (m *mockSysCalls) PtracePokeText(pid int, addr uintptr, data uintptr) error {
+	m.pokeTextCalls = append(m.pokeTextCalls, pokeCall{pid: pid, addr: addr, data: data})
+	return m.pokeTextErr
+}
+
+func TestPtacer_PokeText_WriteShellcode(t *testing.T) {
+	const baseAddr uintptr = 0x7f0000002000
+	mock := &mockSysCalls{}
+	tracer := &ptracer{pid: 1234, sys: mock}
+	shellcode := []byte{
+		0x48, 0x31, 0xc0, 0x48, 0x89, 0xc7, 0x48, 0x31,
+		0xd2, 0x48, 0x31, 0xf6, 0x0f, 0x05, 0xc3, 0x90,
+	}
+	err := tracer.PokeText(baseAddr, shellcode)
+	assert.NoError(t, err)
+	assert.Len(t, mock.pokeTextCalls, 2)
+	assert.Len(t, mock.pokeDataCalls, 0)
 }
 
 func TestPtracer_PokeData_WritePathWithnull(t *testing.T) {
