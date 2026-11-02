@@ -3,6 +3,8 @@ package injector
 import (
 	"encoding/binary"
 	"errors"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -16,6 +18,8 @@ type sysCalls interface {
 	PtraceDetach(pid int) error
 	PtracePokeData(pid int, addr uintptr, data uintptr) error
 	PtracePokeText(pid int, addr uintptr, data uintptr) error
+	PtraceGetRegs(pid int, regs *unix.PtraceRegs) error
+	PtraceSetRegs(pid int, regs *unix.PtraceRegs) error
 }
 
 type Tracer interface {
@@ -53,6 +57,10 @@ func (p *ptracer) PokeText(addr uintptr, shellcode []byte) error {
 	return p.writeWords(addr, shellcode, func(a, w uintptr) error {
 		return p.sys.PtracePokeText(p.pid, a, w)
 	})
+}
+
+func (p *ptracer) SetRegs(regs unix.PtraceRegs) error {
+	return p.sys.PtraceSetRegs(p.pid, &regs)
 }
 
 func (p *ptracer) writeWords(addr uintptr, data []byte, writer func(uintptr, uintptr) error) error {

@@ -4,12 +4,18 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/sys/unix"
 )
 
 type pokeCall struct {
 	pid  int
 	addr uintptr
 	data uintptr
+}
+
+type regsCall struct {
+	pid  int
+	regs unix.PtraceRegs
 }
 
 type mockSysCalls struct {
@@ -20,6 +26,25 @@ type mockSysCalls struct {
 	pokeDataCalls []pokeCall
 	pokeTextErr   error
 	pokeTextCalls []pokeCall
+	getRegsErr    error
+	getRegsRegs   unix.PtraceRegs
+	getRegsCalls  int
+	setRegsErr    error
+	setRegsCalls  []regsCall
+}
+
+func (m *mockSysCalls) PtraceGetRegs(pid int, regs *unix.PtraceRegs) error {
+	m.getRegsCalls++
+	if m.getRegsErr != nil {
+		return m.getRegsErr
+	}
+	*regs = m.getRegsRegs
+	return nil
+}
+
+func (m *mockSysCalls) PtraceSetRegs(pid int, regs *unix.PtraceRegs) error {
+	m.setRegsCalls = append(m.setRegsCalls, regsCall{pid: pid, regs: *regs})
+	return m.setRegsErr
 }
 
 func (m *mockSysCalls) PtraceAttach(pid int) error {
@@ -40,6 +65,22 @@ func (m *mockSysCalls) PtracePokeData(pid int, addr uintptr, data uintptr) error
 func (m *mockSysCalls) PtracePokeText(pid int, addr uintptr, data uintptr) error {
 	m.pokeTextCalls = append(m.pokeTextCalls, pokeCall{pid: pid, addr: addr, data: data})
 	return m.pokeTextErr
+}
+
+func TestPtracer_SetRegs_SetsRIPAndRDI(t *testing.T) {
+	const (
+		shellcodeAddr uintptr = 0x7f0000002000
+		stringAddr    uintptr = 0x7f0000001000
+	)
+	mock := &mockSysCalls{}
+	tracer := &ptracer{pid: 1234, sys: mock}
+	regs := unix.PtraceRegs{
+		Rip: uint64(shellcodeAddr),
+		Rdi: uint64(stringAddr),
+	}
+	err := tracer.SetRegs(regs)
+	assert.NoError(t, err)
+	assert.Len(t, mock.setRegsCalls, 1)
 }
 
 func TestPtacer_PokeText_WriteShellcode(t *testing.T) {
