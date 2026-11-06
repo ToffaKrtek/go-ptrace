@@ -28,6 +28,13 @@ type sysCalls interface {
 type Tracer interface {
 	Attach() error
 	Detach() error
+	Mmap(size int) (uintptr, error)
+	PokeData(addr uintptr, data []byte) error
+	PokeText(addr uintptr, shellcode []byte) error
+	GetRegs() (unix.PtraceRegs, error)
+	SetRegs(regs unix.PtraceRegs) error
+	Cont() error
+	Wait() error
 }
 
 type ptracer struct {
