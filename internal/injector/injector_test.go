@@ -84,7 +84,7 @@ func (m *mockTracer) Wait() error {
 
 func TestInjectorInject_ORchestration(t *testing.T) {
 	mock := &mockTracer{}
-	inj := &injector{tracer: mock}
+	inj := &Injector{Tracer: mock}
 	shelcode := []byte{0xcc, 0x90}
 	libPath := "/tmp/lib.so"
 	err := inj.Inject(1234, shelcode, libPath)
@@ -102,7 +102,7 @@ func TestInjectorInject_ORchestration(t *testing.T) {
 
 func TestInjectorAttachEPERM(t *testing.T) {
 	mock := &mockTracer{attachErr: unix.EPERM}
-	inj := &injector{tracer: mock}
+	inj := &Injector{Tracer: mock}
 	err := inj.Inject(1234, []byte{}, "")
 	assert.Error(t, err)
 }

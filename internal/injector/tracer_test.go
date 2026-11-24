@@ -1,6 +1,11 @@
 package injector
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -223,7 +228,35 @@ func TestTracer_Detach(t *testing.T) {
 }
 
 func TestPtracer_Mmap_Success(t *testing.T) {
-	tracer := &ptracer{pid: 1234, sys: &mockSysCalls{}}
+	t.Parallel()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not found: %v", err)
+	}
+	cmd := exec.Command(sleepPath, "30")
+	err = cmd.Start()
+	assert.NoError(t, err)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	tracer := NewTracer(cmd.Process.Pid)
+	err = tracer.Attach()
+	if err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("ptrace denied: %v", err)
+		}
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(func() { _ = tracer.Detach() })
+
+	_, err = unix.Wait4(cmd.Process.Pid, nil, 0, nil)
+	assert.NoError(t, err)
+
 	addr, err := tracer.Mmap(4096)
 	assert.NoError(t, err)
 	assert.NotEqual(t, addr, ^uintptr(0))
@@ -234,4 +267,184 @@ func TestPtracer_Mmap_InvalidSize(t *testing.T) {
 	addr, err := tracer.Mmap(0)
 	assert.Error(t, err)
 	assert.Equal(t, addr, ^uintptr(0))
+}
+
+func TestPtracer_Mmap_ValidSize(t *testing.T) {
+	t.Parallel()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not found: %v", err)
+	}
+	cmd := exec.Command(sleepPath, "30")
+	err = cmd.Start()
+	assert.NoError(t, err)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	tracer := NewTracer(cmd.Process.Pid)
+	err = tracer.Attach()
+	if err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("ptrace denied: %v", err)
+		}
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(func() { _ = tracer.Detach() })
+
+	// Wait for SIGSTOP
+	_, err = unix.Wait4(cmd.Process.Pid, nil, 0, nil)
+	assert.NoError(t, err)
+
+	// Test: size > 0 should succeed and return non-zero address
+	addr, err := tracer.Mmap(256)
+	assert.NoError(t, err)
+	assert.NotZero(t, addr)
+
+	// Verify: data written via PokeData must be readable from target process
+	testData := []byte("hello_mmap")
+	err = tracer.PokeData(addr, testData)
+	assert.NoError(t, err, "PokeData to Mmap address must succeed")
+
+	// Read back via /proc/pid/mem
+	f, err := os.Open(fmt.Sprintf("/proc/%d/mem", cmd.Process.Pid))
+	assert.NoError(t, err)
+	defer f.Close()
+
+	readBuf := make([]byte, len(testData))
+	n, err := f.ReadAt(readBuf, int64(addr))
+	assert.NoError(t, err)
+	assert.Equal(t, len(testData), n)
+	assert.Equal(t, testData, readBuf[:n], "data read from target process must match written data")
+}
+
+func TestPtracer_Mmap_InvalidSizeZero(t *testing.T) {
+	t.Parallel()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not found: %v", err)
+	}
+	cmd := exec.Command(sleepPath, "30")
+	err = cmd.Start()
+	assert.NoError(t, err)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	tracer := NewTracer(cmd.Process.Pid)
+	err = tracer.Attach()
+	if err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("ptrace denied: %v", err)
+		}
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(func() { _ = tracer.Detach() })
+
+	_, err = unix.Wait4(cmd.Process.Pid, nil, 0, nil)
+	assert.NoError(t, err)
+
+	// Test: size == 0 should return error
+	_, err = tracer.Mmap(0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+}
+
+func TestPtracer_Mmap_InvalidSizeNegative(t *testing.T) {
+	t.Parallel()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not found: %v", err)
+	}
+	cmd := exec.Command(sleepPath, "30")
+	err = cmd.Start()
+	assert.NoError(t, err)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	tracer := NewTracer(cmd.Process.Pid)
+	err = tracer.Attach()
+	if err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("ptrace denied: %v", err)
+		}
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(func() { _ = tracer.Detach() })
+
+	_, err = unix.Wait4(cmd.Process.Pid, nil, 0, nil)
+	assert.NoError(t, err)
+
+	// Test: size < 0 should return error
+	_, err = tracer.Mmap(-1)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+}
+
+func TestPtracer_Mmap_PageAlignment(t *testing.T) {
+	t.Parallel()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not found: %v", err)
+	}
+	cmd := exec.Command(sleepPath, "30")
+	err = cmd.Start()
+	assert.NoError(t, err)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	tracer := NewTracer(cmd.Process.Pid)
+	err = tracer.Attach()
+	if err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("ptrace denied: %v", err)
+		}
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(func() { _ = tracer.Detach() })
+
+	_, err = unix.Wait4(cmd.Process.Pid, nil, 0, nil)
+	assert.NoError(t, err)
+
+	// Test: returned address must be page-aligned (4096)
+	addr, err := tracer.Mmap(4096)
+	assert.NoError(t, err)
+	assert.Equal(t, uintptr(0), addr%4096, "address must be page-aligned to 4096")
+
+	// Also test with non-page size — should still be aligned
+	addr2, err := tracer.Mmap(100)
+	assert.NoError(t, err)
+	assert.Equal(t, uintptr(0), addr2%4096, "address must be page-aligned to 4096")
+
+	// Verify: data must be writable and readable at aligned address
+	testData := []byte("align_test")
+	err = tracer.PokeData(addr2, testData)
+	assert.NoError(t, err, "PokeData to aligned address must succeed")
+
+	f, err := os.Open(fmt.Sprintf("/proc/%d/mem", cmd.Process.Pid))
+	assert.NoError(t, err)
+	defer f.Close()
+
+	readBuf := make([]byte, len(testData))
+	n, err := f.ReadAt(readBuf, int64(addr2))
+	assert.NoError(t, err)
+	assert.Equal(t, testData, readBuf[:n])
 }

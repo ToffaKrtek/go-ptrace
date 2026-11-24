@@ -4,13 +4,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
 const (
 	MAP_FAILED = ^uintptr(0)
-	MAP_OK     = 0x7f0000000000
+	pageSize   = 4096
 	wordSize   = 8
 )
 
@@ -52,9 +54,55 @@ func (t *ptracer) Detach() error {
 
 func (p *ptracer) Mmap(size int) (uintptr, error) {
 	if size <= 0 {
-		return MAP_FAILED, errors.New("invalid mmap size")
+		return MAP_FAILED, errors.New("invalid mmap size: must be positive")
 	}
-	return MAP_OK, nil
+
+	addr, err := p.findWritableAddr()
+	if err != nil {
+		return MAP_FAILED, fmt.Errorf("find writable addr: %w", err)
+	}
+
+	// Page-align the address
+	addr = (addr + pageSize - 1) &^ (pageSize - 1)
+	return addr, nil
+}
+
+// findWritableAddr parses /proc/<pid>/maps and returns a page-aligned
+// address from a writable anonymous mapping.
+func (p *ptracer) findWritableAddr() (uintptr, error) {
+	mapsPath := fmt.Sprintf("/proc/%d/maps", p.pid)
+	data, err := os.ReadFile(mapsPath)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", mapsPath, err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		// Format: start-end perms offset dev inode [pathname]
+		// Example: 7f1234567000-7f1234568000 rw-p 00000000 00:00 0
+		// Example with path: 7f1234567000-7f1234568000 rw-p 00000000 08:01 1234 /lib/x86_64-linux-gnu/libc.so.6
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+
+		// Anonymous mapping: exactly 5 fields (no pathname), inode is 0
+		if len(fields) == 5 && fields[4] == "0" {
+			var start, end uintptr
+			var perms string
+			n, err := fmt.Sscanf(fields[0], "%x-%x", &start, &end)
+			if n != 2 || err != nil {
+				continue
+			}
+			perms = fields[1]
+
+			// Look for writable anonymous mapping (rw-p)
+			if perms == "rw-p" && end-start >= uintptr(pageSize) {
+				return start, nil
+			}
+		}
+	}
+
+	return 0, errors.New("no writable anonymous mapping found")
 }
 
 func (p *ptracer) PokeData(addr uintptr, data []byte) error {
